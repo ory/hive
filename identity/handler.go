@@ -1,11 +1,14 @@
 package identity
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/ory/herodot"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/julienschmidt/httprouter"
 	"github.com/pkg/errors"
@@ -14,11 +17,13 @@ import (
 	"github.com/ory/kratos/x"
 
 	"github.com/ory/x/jsonx"
+	"github.com/ory/x/sqlcon"
 	"github.com/ory/x/sqlxx"
 	"github.com/ory/x/urlx"
 )
 
 const RouteBase = "/identities"
+const RouteKnownCredentials = "/credentials/known"
 
 type (
 	handlerDependencies interface {
@@ -47,6 +52,138 @@ func (h *Handler) RegisterAdminRoutes(admin *x.RouterAdmin) {
 
 	admin.POST(RouteBase, h.create)
 	admin.PUT(RouteBase+"/:id", h.update)
+
+	admin.POST(RouteKnownCredentials, h.knownCredentials)
+}
+
+// A single login method and provider.
+//
+// swagger:response knownCredentialsMethod
+// nolint:deadcode,unused
+type knownCredentialsMethod struct {
+	// in: body
+	Method string `json:"method"`
+	// in: body
+	Provider string `json:"provider,omitempty"`
+}
+
+// Response object for knownCredentials
+//
+// swagger:response knownCredentialsResponse
+// nolint:deadcode,unused
+type knownCredentialsResponse struct {
+	// in: body
+	// required: true
+	Found bool `json:"found"`
+	// in: body
+	// type: array
+	Methods []knownCredentialsMethod `json:"methods,omitempty"`
+}
+
+// Request object for knownCredentials
+type knownCredentialsRequest struct {
+	Identifier string `json:"identifier"`
+	Method     string `json:"method"`
+}
+
+func (h *Handler) knownCredentialsOIDC(ctx context.Context, id string) (bool, []string, error) {
+	address, err := h.r.PrivilegedIdentityPool().FindVerifiableAddressByValue(ctx, VerifiableAddressTypeEmail, id)
+	if err != nil {
+		if errors.Is(err, sqlcon.ErrNoRows) {
+			return false, nil, nil
+		}
+		return false, nil, err
+	}
+
+	identity, err := h.r.PrivilegedIdentityPool().GetIdentityConfidential(ctx, address.IdentityID)
+	if err != nil {
+		if errors.Is(err, sqlcon.ErrNoRows) {
+			return false, nil, nil
+		}
+		return false, nil, err
+	}
+
+	creds, ok := identity.GetCredentials(CredentialsTypeOIDC)
+	if !ok {
+		return false, []string{}, nil
+	}
+
+	providers := gjson.Get(string(creds.Config), "providers")
+	result := []string{}
+	for _, provider := range providers.Array() {
+		result = append(result, provider.Get("provider").String())
+	}
+
+	return true, result, nil
+}
+
+var ErrSpecifyIdentifier = herodot.DefaultError{
+	ErrorField: "must specify identifier",
+	CodeField:  http.StatusBadRequest,
+}
+
+var ErrInvalidMethod = herodot.DefaultError{
+	ErrorField: "method must be either 'password' or 'oidc'",
+	CodeField:  http.StatusBadRequest,
+}
+
+// swagger:route GET /credentials/known admin knownCredentialsRequest
+//
+// Check if a specified identifier has been previously registered with the specified method, or optionally search
+// for the method and provider if a method is not specified.
+//
+//     Produces:
+//     - application/json
+//
+//     Schemes: http, https
+//
+//     Responses:
+//       200: knownCredentialsResponse
+//       500: genericError
+func (h *Handler) knownCredentials(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+
+	kcr := knownCredentialsRequest{}
+	if err := jsonx.NewStrictDecoder(r.Body).Decode(&kcr); err != nil {
+		h.r.Writer().WriteErrorCode(w, r, http.StatusBadRequest, errors.WithStack(err))
+		return
+	}
+
+	if kcr.Identifier == "" {
+		h.r.Writer().WriteErrorCode(w, r, http.StatusBadRequest, ErrSpecifyIdentifier)
+		return
+	}
+
+	if kcr.Method != "" && kcr.Method != CredentialsTypeOIDC.String() && kcr.Method != CredentialsTypePassword.String() {
+		h.r.Writer().WriteErrorCode(w, r, http.StatusBadRequest, ErrInvalidMethod)
+		return
+	}
+
+	result := knownCredentialsResponse{false, []knownCredentialsMethod{}}
+	if kcr.Method == CredentialsTypePassword.String() || kcr.Method == "" {
+		// if the credentials can be looked up directly by identifier then they're type password
+		_, _, err := h.r.PrivilegedIdentityPool().FindByCredentialsIdentifier(r.Context(), CredentialsTypePassword, kcr.Identifier)
+		if err == nil {
+			result.Found = true
+			result.Methods = append(result.Methods, knownCredentialsMethod{CredentialsTypePassword.String(), ""})
+		}
+	}
+
+	if kcr.Method == CredentialsTypeOIDC.String() || kcr.Method == "" {
+		found, providers, err := h.knownCredentialsOIDC(r.Context(), kcr.Identifier)
+		if err != nil {
+			h.r.Writer().WriteError(w, r, err)
+			return
+		}
+
+		if found {
+			result.Found = true
+			for _, provider := range providers {
+				result.Methods = append(result.Methods, knownCredentialsMethod{CredentialsTypeOIDC.String(), provider})
+			}
+		}
+	}
+
+	h.r.Writer().Write(w, r, &result)
 }
 
 // A single identity.
