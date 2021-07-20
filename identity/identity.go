@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"bytes"
 	"context"
 	"database/sql/driver"
 	"encoding/json"
@@ -40,6 +41,23 @@ func (lt State) IsValid() error {
 	return errors.New("identity state is not valid")
 }
 
+type CredentialsConfig struct {
+	Providers []IdentifierCredentialsEncrypted `json:"providers"`
+}
+type IdentifierCredentialsEncrypted struct {
+	Subject               string `json:"subject"`
+	Provider              string `json:"provider"`
+	EncryptedAccessToken  []byte `json:"encrypted_access_token"`
+	EncryptedRefreshToken []byte `json:"encrypted_refresh_token"`
+}
+
+type IdentifierCredential struct {
+	Subject      string `json:"subject"`
+	Provider     string `json:"provider"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
 // Identity represents an Ory Kratos identity
 //
 // An identity can be a real human, a service, an IoT device - everything that
@@ -59,6 +77,9 @@ type Identity struct {
 
 	// Credentials represents all credentials that can be used for authenticating this identity.
 	Credentials map[CredentialsType]Credentials `json:"credentials,omitempty" faker:"-" db:"-"`
+
+	// IdentifierCredential contains the access and refresh token for oidc identifier
+	IdentifierCredential *IdentifierCredential `json:"identifier_credential,omitempty" faker:"-" db:"-"`
 
 	// SchemaID is the ID of the JSON Schema to be used for validating the identity's traits.
 	//
@@ -253,7 +274,6 @@ func (i IdentityWithCredentialsMetadataInJSON) MarshalJSON() ([]byte, error) {
 		v.Config = nil
 		i.Credentials[k] = v
 	}
-
 	result, err := json.Marshal(localIdentity(i))
 	if err != nil {
 		return nil, err
@@ -286,4 +306,12 @@ func (i *Identity) ValidateNID() error {
 	}
 
 	return nil
+}
+
+func (i *Identity) GetCredential(ctx context.Context, config sqlxx.JSONRawMessage) (*CredentialsConfig, error) {
+	var o CredentialsConfig
+	if err := json.NewDecoder(bytes.NewBuffer(config)).Decode(&o); err != nil {
+		return nil, err
+	}
+	return &o, nil
 }

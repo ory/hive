@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gtank/cryptopasta"
+
 	"github.com/ory/x/tlsx"
 
 	"github.com/google/uuid"
@@ -50,6 +52,7 @@ const (
 	ViperKeyCourierSMTPFromName                                     = "courier.smtp.from_name"
 	ViperKeySecretsDefault                                          = "secrets.default"
 	ViperKeySecretsCookie                                           = "secrets.cookie"
+	ViperKeySecretsAES                                              = "secrets.aes"
 	ViperKeyPublicBaseURL                                           = "serve.public.base_url"
 	ViperKeyPublicDomainAliases                                     = "serve.public.domain_aliases"
 	ViperKeyPublicPort                                              = "serve.public.port"
@@ -139,6 +142,9 @@ const (
 const DefaultSessionCookieName = "ory_kratos_session"
 
 type (
+	AES struct {
+		Secrets [][32]byte `json:"secret"`
+	}
 	Argon2 struct {
 		Memory            bytesize.ByteSize `json:"memory"`
 		Iterations        uint32            `json:"iterations"`
@@ -236,7 +242,7 @@ func MustNew(t *testing.T, l *logrusx.Logger, opts ...configx.OptionModifier) *C
 func New(ctx context.Context, l *logrusx.Logger, opts ...configx.OptionModifier) (*Config, error) {
 	opts = append([]configx.OptionModifier{
 		configx.WithStderrValidationReporter(),
-		configx.OmitKeysFromTracing("dsn", "courier.smtp.connection_uri", "secrets.default", "secrets.cookie", "client_secret"),
+		configx.OmitKeysFromTracing("dsn", "courier.smtp.connection_uri", "secrets.default", "secrets.cookie", "secrets.aes", "client_secret"),
 		configx.WithImmutables("serve", "profiling", "log"),
 		configx.WithLogrusWatcher(l),
 		configx.WithLogger(l),
@@ -314,6 +320,12 @@ func (p *Config) HasherBcrypt() *Bcrypt {
 	}
 
 	return &Bcrypt{Cost: cost}
+}
+
+func (p *Config) CryptAES() *AES {
+	return &AES{
+		Secrets: p.SecretsAES(),
+	}
 }
 
 func (p *Config) listenOn(key string) string {
@@ -531,6 +543,23 @@ func (p *Config) SecretsSession() [][]byte {
 		result[k] = []byte(v)
 	}
 
+	return result
+}
+
+func (p *Config) SecretsAES() [][32]byte {
+	secrets := p.p.Strings(ViperKeySecretsAES)
+	if len(secrets) == 0 {
+		return [][32]byte{*cryptopasta.NewEncryptionKey()}
+	}
+	result := make([][32]byte, len(secrets))
+	for n, s := range secrets {
+		if len(s) != 32 {
+			continue
+		}
+		for k, v := range []byte(s) {
+			result[n][k] = byte(v)
+		}
+	}
 	return result
 }
 

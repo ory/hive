@@ -1600,6 +1600,22 @@ secrets:
   cookie:
     - ipsumipsumipsumi
 
+  ## Secret Keys for AES ##
+  #
+  # The first secret in the array is used for encrypting cookies while all other keys are used to decrypt data.
+  # for now is only used for access and refresh token from oidc.
+  #
+  # WARNING the secret key must be 32 caracters long all keys that not 32 characters long will be ignore
+  #
+  # Set this value using environment variables on
+  # - Linux/macOS:
+  #    $ export SECRETS_AES=<value>
+  # - Windows Command Line (CMD):
+  #    > set SECRETS_AES=<value>
+  #
+  aes:
+    - ipsumipsumipsumi
+
   ## Default Encryption Signing Secrets ##
   #
   # The first secret in the array is used for signing and encrypting things while all other keys are used to verify and decrypt older things that were signed with that old secret.

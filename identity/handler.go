@@ -1,9 +1,12 @@
 package identity
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/ory/kratos/crypt"
 
 	"github.com/ory/herodot"
 
@@ -35,8 +38,14 @@ type (
 	}
 	Handler struct {
 		r handlerDependencies
+
+		crypter crypt.Crypt
 	}
 )
+
+func (h *Handler) Config(ctx context.Context) *config.Config {
+	return h.r.Config(ctx)
+}
 
 func NewHandler(r handlerDependencies) *Handler {
 	return &Handler{r: r}
@@ -163,6 +172,40 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request, ps httprouter.Para
 		return
 	}
 
+	identifier := r.URL.Query().Get("identifier")
+	if identifier != "" {
+		_, c, err := h.r.PrivilegedIdentityPool().FindByCredentialsIdentifier(r.Context(), CredentialsTypeOIDC, identifier)
+		if err != nil {
+			h.r.Writer().WriteError(w, r, errors.WithStack(err))
+			return
+		}
+		cred, err := i.GetCredential(r.Context(), c.Config)
+		if err != nil {
+			h.r.Writer().WriteError(w, r, errors.WithStack(err))
+			return
+		}
+		if len(cred.Providers) == 0 {
+			h.r.Writer().WriteErrorCode(w, r, http.StatusNotFound, errors.WithStack(errors.New("identifier does not exist in this identity")))
+			return
+		}
+		cr := h.Crypt()
+		accessToken, err := cr.Decrypt(r.Context(), cred.Providers[0].EncryptedAccessToken)
+		if err != nil {
+			h.r.Writer().WriteError(w, r, errors.WithStack(err))
+			return
+		}
+		refreshToken, err := cr.Decrypt(r.Context(), cred.Providers[0].EncryptedRefreshToken)
+		if err != nil {
+			h.r.Writer().WriteError(w, r, errors.WithStack(err))
+			return
+		}
+		i.IdentifierCredential = &IdentifierCredential{
+			Subject:      cred.Providers[0].Subject,
+			Provider:     cred.Providers[0].Provider,
+			AccessToken:  accessToken,
+			RefreshToken: refreshToken,
+		}
+	}
 	h.r.Writer().Write(w, r, IdentityWithCredentialsMetadataInJSON(*i))
 }
 
@@ -374,4 +417,11 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request, ps httprouter.P
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) Crypt() crypt.Crypt {
+	if h.crypter == nil {
+		h.crypter = crypt.NewCryptAES(h)
+	}
+	return h.crypter
 }
